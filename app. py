@@ -1,0 +1,84 @@
+import gradio as gr
+from google import genai
+from google.genai import types
+from PIL import Image
+import io, os, re
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+MEMORY_FILE = "memory.txt"
+memory_text = ""
+if os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        memory_text = f.read()
+def save_memory(new_text):
+    global memory_text
+    updated = False
+    m = re.search(r"اسمي\s+(\w+)", new_text)
+    if m:
+        memory_text += f" اسم المستخدم هو {m.group(1)}."
+        updated = True
+    if "انا ولد" in new_text or "أنا ولد" in new_text:
+        memory_text += " المستخدم ولد. ناديه صاحبي او اخويا، وكلمه بصيغة الولد."
+        updated = True
+    if "انا بنت" in new_text or "أنا بنت" in new_text:
+        memory_text += " المستخدم بنت. ناديها صاحبتي او اختي، وكلمها بصيغة البنت."
+        updated = True
+    if updated:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            f.write(memory_text)
+        return True
+    return False
+def get_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = ""
+        for part in content:
+            if isinstance(part, dict):
+                out += part.get("text", "")
+            else:
+                out += str(part)
+        return out
+    return str(content)
+def chat(message, history):
+    try:
+        save_memory(message)
+        contents = []
+        for h in history:
+            if isinstance(h, dict):
+                role = "user" if h["role"] == "user" else "model"
+                contents.append(types.Content(role=role, parts=[types.Part.from_text(text=get_text(h["content"]))]))
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=message)]))
+        extra = f"ذاكرة دايمة: {memory_text}\n" if memory_text else ""
+        response = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=extra + " انت بودي، صاحب مصري جدع وبتتكلم مصري. ممنوع تقول كلمة وحش خالص. لو بتكلم ولد قوله صاحبي او اخويا، ولو بتكلم بنت قولها صاحبتي او اختي. لو مش عارف اللي بيكلمك ولد ولا بنت، اسأله في اول كلامك: انت ولد ولا بنت يا صاحبي؟ وافتكر اجابته. رد بالتفصيل وادي المعلومة كاملة، وارغي معاه عادي زي الصحاب، مش سطر واحد. لو المستخدم قالك معلومة عن نفسه افتكرها.",
+                max_output_tokens=1200,
+                temperature=0.8
+            )
+        )
+        return response.text
+    except Exception as e:
+        return f"الخطأ هو: {e}"
+def make_image(prompt):
+    try:
+        res = client.models.generate_content(model="gemini-2.5-flash-image", contents=prompt)
+        for part in res.candidates[0].content.parts:
+            if part.inline_data is not None:
+                img = Image.open(io.BytesIO(part.inline_data.data))
+                return img
+        return None
+    except Exception as e:
+        return f"الخطأ هو: {e}"
+with gr.Blocks(title="boodychat") as demo:
+    gr.Markdown("# boodychat\nازيك يا صاحبي؟ انا بودي")
+    with gr.Tab("كلام"):
+        gr.ChatInterface(chat)
+    with gr.Tab("صور"):
+        gr.Markdown("اكتب وصف الصورة هنا، مثلا: قطة بتلعب كورة")
+        txt = gr.Textbox(label="وصف الصورة")
+        btn = gr.Button("اعملي صورة يا بودي")
+        out = gr.Image(label="الصورة")
+        btn.click(make_image, inputs=txt, outputs=out)
+demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
